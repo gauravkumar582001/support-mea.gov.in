@@ -1,31 +1,47 @@
-const express = require('express'), fs = require('fs'), path = require('path'), crypto = require('crypto');
+﻿const express = require('express'), fs = require('fs'), path = require('path'), crypto = require('crypto');
+
+// Secrets must come from environment (no hardcoded fallbacks)
+const need = k => { if (!process.env[k]) { console.error(k + ' env variable is missing. Set it and restart.'); process.exit(1); } return process.env[k]; };
 const PORT = process.env.PORT || 3000;
 const USER = process.env.PORTAL_USER || 'support';
-const PASS = process.env.PORTAL_PASS || 'ChangeMe@123';
-const KEY = crypto.createHash('sha256').update(process.env.SECRET_KEY || 'change-this-secret').digest();
-const FILE = path.join(__dirname, 'data', 'data.json');
+const PASS = need('PORTAL_PASS');
+const KEY = crypto.createHash('sha256').update(need('SECRET_KEY')).digest();
+const RECOVERY = need('RECOVERY_KEY');
+
+// DATA_DIR lets you point to a persistent disk (e.g. Render disk mount path)
+const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
+fs.mkdirSync(DATA_DIR, { recursive: true });
+const FILE = path.join(DATA_DIR, 'data.json');
+const AUTH = path.join(DATA_DIR, 'auth.json');
+const OPTS_FILE = path.join(DATA_DIR, 'options.json');
+
 let db = { creds: [], mail: [], audit: [] };
-fs.mkdirSync(path.dirname(FILE), { recursive: true });
 if (fs.existsSync(FILE)) db = JSON.parse(fs.readFileSync(FILE, 'utf8'));
 const persist = () => fs.writeFileSync(FILE, JSON.stringify(db, null, 1));
 
 // passwords are encrypted (AES-256-GCM) before being written to disk
 const SECRET = ['pass', 'subPass'];
-const enc = t => { if (!t) return t; const iv = crypto.randomBytes(12), c = crypto.createCipheriv('aes-256-gcm', KEY, iv);
-  const b = Buffer.concat([c.update(t, 'utf8'), c.final()]); return 'enc:' + Buffer.concat([iv, c.getAuthTag(), b]).toString('base64'); };
-const dec = t => { if (!t || !String(t).startsWith('enc:')) return t; try { const b = Buffer.from(t.slice(4), 'base64');
-  const d = crypto.createDecipheriv('aes-256-gcm', KEY, b.subarray(0, 12)); d.setAuthTag(b.subarray(12, 28));
-  return Buffer.concat([d.update(b.subarray(28)), d.final()]).toString('utf8'); } catch { return ''; } };
+const enc = t => {
+  if (!t) return t; const iv = crypto.randomBytes(12), c = crypto.createCipheriv('aes-256-gcm', KEY, iv);
+  const b = Buffer.concat([c.update(t, 'utf8'), c.final()]); return 'enc:' + Buffer.concat([iv, c.getAuthTag(), b]).toString('base64');
+};
+const dec = t => {
+  if (!t || !String(t).startsWith('enc:')) return t; try {
+    const b = Buffer.from(t.slice(4), 'base64');
+    const d = crypto.createDecipheriv('aes-256-gcm', KEY, b.subarray(0, 12)); d.setAuthTag(b.subarray(12, 28));
+    return Buffer.concat([d.update(b.subarray(28)), d.final()]).toString('utf8');
+  } catch { return ''; }
+};
 const mapSecrets = (r, fn) => { const o = { ...r }; SECRET.forEach(k => { if (o[k]) o[k] = fn(o[k]); }); return o; };
 
 const same = (a, b) => { const x = Buffer.from(String(a)), y = Buffer.from(String(b)); return x.length === y.length && crypto.timingSafeEqual(x, y); };
-// password can be changed via "Forgot password" (needs RECOVERY_KEY); stored hashed in data/auth.json
-const AUTH = path.join(__dirname, 'data', 'auth.json'), RECOVERY = process.env.RECOVERY_KEY || 'RESET-ME-123';
+// password can be changed via "Forgot password" (needs RECOVERY_KEY); stored hashed in auth.json
 let authOv = fs.existsSync(AUTH) ? JSON.parse(fs.readFileSync(AUTH, 'utf8')) : null;
 const hashPw = (p, salt) => crypto.scryptSync(String(p).slice(0, 200), salt, 32).toString('hex');
 const checkPw = p => authOv ? same(hashPw(p, authOv.salt), authOv.hash) : same(p, PASS);
 const sessions = new Map(), fails = new Map();
 const app = express();
+app.set('trust proxy', 1); // correct client IP behind Render/Vercel proxy
 app.use(express.json({ limit: '200kb' }));
 
 app.post('/api/login', (q, s) => {
@@ -65,10 +81,37 @@ app.use('/api', (q, s, n) => {
   q.user = x.name; n();
 });
 
+// ---- Dynamic options (defined BEFORE the /api/:c routes so they actually match) ----
+let dynamicOptions = {
+  users: ['Md Asif', 'Mayank Sharma', 'Naveen Sandhu', 'Rahul Kumar', 'Ritesh Kumar', 'Vineet Sharma', 'Gaurav Kumar'],
+  missions: ['INDIA', 'ALGERIA-ALGIERS', 'ANGOLA-LUANDA', 'ARGENTINA-BUENOS AIRES', 'ARMENIA-YEREVAN', 'AUSTRALIA-BRISBANE', 'AUSTRALIA-CANBERRA', 'AUSTRALIA-MELBOURNE', 'AUSTRALIA-PERTH', 'AUSTRALIA-SYDNEY', 'AUSTRIA-VIENNA', 'AZERBAIJAN-BAKU', 'BAHRAIN-ADLIYA', 'BANGLADESH-CHITTAGONG', 'BANGLADESH-DHAKA', 'BANGLADESH-KHULNA', 'BANGLADESH-RAJSHAHI', 'BANGLADESH-SYLHET', 'CHINA-HONG KONG', 'GERMANY-BERLIN', 'IRELAND-DUBLIN', 'ITALY-MILAN', 'NEW ZEALAND-WELLINGTON', 'NORWAY-OSLO', 'SLOVAKIA-BRATISLAVA', 'SRI LANKA-COLOMBO', 'SWITZERLAND-GENEVA', 'UK-LONDON', 'USA-CHICAGO', 'USA-SAN FRANCISCO'],
+  districts: ['Central Delhi', 'New Delhi', 'North Delhi', 'South Delhi', 'East Delhi', 'West Delhi', 'Mumbai', 'Bangalore', 'Hyderabad', 'Chennai', 'Kolkata', 'Ahmedabad', 'Pune', 'Jaipur', 'Lucknow'],
+  modules: ['Biometric', 'Black List Checking (BL)', 'Centralized Visa Issuance System (CVISA)', 'CIPPS', 'CONSPROM', 'Consular Issuance System (CIS)', 'District Police Module (DPM)', 'DVISA', 'eFRRO', 'EMAIL Related', 'E-SANAD', 'eSEWA (Online Indian Consular Services)/eCCSS', 'e-VISA', 'e-VISA (PLI Application)', 'Global Entry Program (GEP)', 'Indian Citizenship Portal', 'Indian Visa Online (VSS)', 'Overseas Citizen of India (OCI)', 'Prior Referral Check (PRC)', 'Virtual Private Network Token (VPN)', 'Other'],
+  shifts: ['Morning', 'Afternoon', 'Night'],
+  states: ['Andaman and Nicobar Islands', 'Andhra Pradesh', 'Arunachal Pradesh', 'Assam', 'Bihar', 'Chandigarh', 'Chhattisgarh', 'Dadra and Nagar Haveli and Daman and Diu', 'Delhi', 'Goa', 'Gujarat', 'Haryana', 'Himachal Pradesh', 'Jammu and Kashmir', 'Jharkhand', 'Karnataka', 'Kerala', 'Ladakh', 'Lakshadweep', 'Madhya Pradesh', 'Maharashtra', 'Manipur', 'Meghalaya', 'Mizoram', 'Nagaland', 'Odisha', 'Puducherry', 'Punjab', 'Rajasthan', 'Sikkim', 'Tamil Nadu', 'Telangana', 'Tripura', 'Uttar Pradesh', 'Uttarakhand', 'West Bengal'],
+  resolutions: ['Issue resolved with remote meeting', 'Issue resolved on Call', 'Issue resolved through mail reply', 'Forwarded to concerned team', 'Meeting sent but Mission not responded', 'Information only mail', 'Transferred to next shift person', 'Replied mail for more information', 'Pending']
+};
+if (fs.existsSync(OPTS_FILE)) {
+  try { dynamicOptions = { ...dynamicOptions, ...JSON.parse(fs.readFileSync(OPTS_FILE, 'utf8')) }; } catch (e) { }
+}
+const persistOptions = () => fs.writeFileSync(OPTS_FILE, JSON.stringify(dynamicOptions, null, 1));
+
+app.get('/api/options', (q, s) => s.json(dynamicOptions));
+app.post('/api/options', (q, s) => {
+  if (q.body && typeof q.body === 'object') {
+    Object.keys(q.body).forEach(k => {
+      if (Array.isArray(q.body[k])) dynamicOptions[k] = q.body[k];
+    });
+    persistOptions();
+  }
+  s.json(dynamicOptions);
+});
+
+// ---- Records ----
 const COLL = ['creds', 'mail'], RESERVED = ['id', 'addedAt', 'editedAt'];
 const label = r => r.name || r.subject || r.mission || r.id;
 const log = (by, action, coll, r, changes) => {
-  db.audit.unshift({ at: new Date().toISOString(), by, action, coll, kind: r.type, item: label(r), info: coll === 'mail' ? [r.mission, r.module, r.status].filter(Boolean).join(' · ') : (r.ip || ''), changes });
+  db.audit.unshift({ at: new Date().toISOString(), by, action, coll, kind: r.type, item: label(r), info: coll === 'mail' ? [r.mission, r.module, r.status].filter(Boolean).join(' Â· ') : (r.ip || ''), changes });
   db.audit = db.audit.slice(0, 5000);
 };
 const clean = b => Object.fromEntries(Object.entries(b || {}).filter(([k, v]) => !RESERVED.includes(k) && typeof v === 'string').map(([k, v]) => [k, v.slice(0, 2000)]));
@@ -125,33 +168,8 @@ app.delete('/api/:c/:id', (q, s) => {
   s.json({ ok: true, item: db[c][i] });
 });
 
-const OPTS_FILE = path.join(__dirname, 'data', 'options.json');
-let dynamicOptions = {
-  users: ['Md Asif', 'Mayank Sharma', 'Naveen Sandhu', 'Rahul Kumar', 'Ritesh Kumar', 'Vineet Sharma', 'Gaurav Kumar'],
-  missions: ['INDIA', 'ALGERIA-ALGIERS', 'ANGOLA-LUANDA', 'ARGENTINA-BUENOS AIRES', 'ARMENIA-YEREVAN', 'AUSTRALIA-BRISBANE', 'AUSTRALIA-CANBERRA', 'AUSTRALIA-MELBOURNE', 'AUSTRALIA-PERTH', 'AUSTRALIA-SYDNEY', 'AUSTRIA-VIENNA', 'AZERBAIJAN-BAKU', 'BAHRAIN-ADLIYA', 'BANGLADESH-CHITTAGONG', 'BANGLADESH-DHAKA', 'BANGLADESH-KHULNA', 'BANGLADESH-RAJSHAHI', 'BANGLADESH-SYLHET', 'CHINA-HONG KONG', 'GERMANY-BERLIN', 'IRELAND-DUBLIN', 'ITALY-MILAN', 'NEW ZEALAND-WELLINGTON', 'NORWAY-OSLO', 'SLOVAKIA-BRATISLAVA', 'SRI LANKA-COLOMBO', 'SWITZERLAND-GENEVA', 'UK-LONDON', 'USA-CHICAGO', 'USA-SAN FRANCISCO'],
-  districts: ['Central Delhi', 'New Delhi', 'North Delhi', 'South Delhi', 'East Delhi', 'West Delhi', 'Mumbai', 'Bangalore', 'Hyderabad', 'Chennai', 'Kolkata', 'Ahmedabad', 'Pune', 'Jaipur', 'Lucknow'],
-  modules: ['Biometric', 'Black List Checking (BL)', 'Centralized Visa Issuance System (CVISA)', 'CIPPS', 'CONSPROM', 'Consular Issuance System (CIS)', 'District Police Module (DPM)', 'DVISA', 'eFRRO', 'EMAIL Related', 'E-SANAD', 'eSEWA (Online Indian Consular Services)/eCCSS', 'e-VISA', 'e-VISA (PLI Application)', 'Global Entry Program (GEP)', 'Indian Citizenship Portal', 'Indian Visa Online (VSS)', 'Overseas Citizen of India (OCI)', 'Prior Referral Check (PRC)', 'Virtual Private Network Token (VPN)', 'Other'],
-  shifts: ['Morning', 'Afternoon', 'Night'],
-  states: ['Andaman and Nicobar Islands', 'Andhra Pradesh', 'Arunachal Pradesh', 'Assam', 'Bihar', 'Chandigarh', 'Chhattisgarh', 'Dadra and Nagar Haveli and Daman and Diu', 'Delhi', 'Goa', 'Gujarat', 'Haryana', 'Himachal Pradesh', 'Jammu and Kashmir', 'Jharkhand', 'Karnataka', 'Kerala', 'Ladakh', 'Lakshadweep', 'Madhya Pradesh', 'Maharashtra', 'Manipur', 'Meghalaya', 'Mizoram', 'Nagaland', 'Odisha', 'Puducherry', 'Punjab', 'Rajasthan', 'Sikkim', 'Tamil Nadu', 'Telangana', 'Tripura', 'Uttar Pradesh', 'Uttarakhand', 'West Bengal'],
-  resolutions: ['Issue resolved with remote meeting', 'Issue resolved on Call', 'Issue resolved through mail reply', 'Forwarded to concerned team', 'Meeting sent but Mission not responded', 'Information only mail', 'Transferred to next shift person', 'Replied mail for more information', 'Pending']
-};
-if (fs.existsSync(OPTS_FILE)) {
-  try { dynamicOptions = { ...dynamicOptions, ...JSON.parse(fs.readFileSync(OPTS_FILE, 'utf8')) }; } catch (e) {}
-}
-const persistOptions = () => fs.writeFileSync(OPTS_FILE, JSON.stringify(dynamicOptions, null, 1));
-
-app.get('/api/options', (q, s) => s.json(dynamicOptions));
-app.post('/api/options', (q, s) => {
-  if (q.body && typeof q.body === 'object') {
-    Object.keys(q.body).forEach(k => {
-      if (Array.isArray(q.body[k])) dynamicOptions[k] = q.body[k];
-    });
-    persistOptions();
-  }
-  s.json(dynamicOptions);
-});
-
 const dist = path.join(__dirname, 'dist');
 app.use(express.static(dist));
 app.use((q, s) => s.sendFile(path.join(dist, 'index.html')));
 app.listen(PORT, () => console.log('Support Hub running on http://localhost:' + PORT));
+
