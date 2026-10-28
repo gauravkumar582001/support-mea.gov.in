@@ -1,0 +1,1 @@
+{ "rewrites": [ { "source": "/api/:path*", "destination": "https://support-mea-gov-in.onrender.com/api/:path*" } ] }
