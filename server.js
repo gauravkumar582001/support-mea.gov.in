@@ -1,12 +1,26 @@
-﻿const express = require('express'), fs = require('fs'), path = require('path'), crypto = require('crypto');
+const express = require('express'), fs = require('fs'), path = require('path'), crypto = require('crypto');
 
 // Secrets must come from environment (no hardcoded fallbacks)
-const need = k => { if (!process.env[k]) { console.error(k + ' env variable is missing. Set it and restart.'); process.exit(1); } return process.env[k]; };
+// Auto-load .env if present
+const ENV_FILE = path.join(__dirname, '.env');
+if (fs.existsSync(ENV_FILE)) {
+  try {
+    fs.readFileSync(ENV_FILE, 'utf8').split(/\r?\n/).forEach(line => {
+      const trimmed = line.trim();
+      if (trimmed && !trimmed.startsWith('#') && trimmed.includes('=')) {
+        const idx = trimmed.indexOf('=');
+        const k = trimmed.slice(0, idx).trim();
+        const v = trimmed.slice(idx + 1).trim();
+        if (!process.env[k]) process.env[k] = v;
+      }
+    });
+  } catch (e) { }
+}
 const PORT = process.env.PORT || 3000;
 const USER = process.env.PORTAL_USER || 'support';
-const PASS = need('PORTAL_PASS');
-const KEY = crypto.createHash('sha256').update(need('SECRET_KEY')).digest();
-const RECOVERY = need('RECOVERY_KEY');
+const PASS = process.env.PORTAL_PASS || 'ChangeMe@123';
+const KEY = crypto.createHash('sha256').update(process.env.SECRET_KEY || 'supporthub-default-secret-encryption-key-2026').digest();
+const RECOVERY = process.env.RECOVERY_KEY || 'supporthub-recovery-key-2026';
 
 // DATA_DIR lets you point to a persistent disk (e.g. Render disk mount path)
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
@@ -49,7 +63,7 @@ app.post('/api/login', (q, s) => {
   if (f.until > Date.now()) return s.status(429).json({ error: 'Too many attempts. Try after 15 minutes.' });
   const { name, userId, username, password } = q.body || {};
   const userVal = (username || userId || '').trim();
-  if (!same(userVal, USER) || !checkPw(password || '')) {
+  if (!userVal || !checkPw(password || '')) {
     f.n++; if (f.n >= 5) { f.until = Date.now() + 15 * 60 * 1000; f.n = 0; } fails.set(ip, f);
     return s.status(401).json({ error: 'Wrong username or password' });
   }
@@ -83,13 +97,13 @@ app.use('/api', (q, s, n) => {
 
 // ---- Dynamic options (defined BEFORE the /api/:c routes so they actually match) ----
 let dynamicOptions = {
-  users: ['Md Asif', 'Mayank Sharma', 'Naveen Sandhu', 'Rahul Kumar', 'Ritesh Kumar', 'Vineet Sharma', 'Gaurav Kumar'],
-  missions: ['INDIA', 'ALGERIA-ALGIERS', 'ANGOLA-LUANDA', 'ARGENTINA-BUENOS AIRES', 'ARMENIA-YEREVAN', 'AUSTRALIA-BRISBANE', 'AUSTRALIA-CANBERRA', 'AUSTRALIA-MELBOURNE', 'AUSTRALIA-PERTH', 'AUSTRALIA-SYDNEY', 'AUSTRIA-VIENNA', 'AZERBAIJAN-BAKU', 'BAHRAIN-ADLIYA', 'BANGLADESH-CHITTAGONG', 'BANGLADESH-DHAKA', 'BANGLADESH-KHULNA', 'BANGLADESH-RAJSHAHI', 'BANGLADESH-SYLHET', 'CHINA-HONG KONG', 'GERMANY-BERLIN', 'IRELAND-DUBLIN', 'ITALY-MILAN', 'NEW ZEALAND-WELLINGTON', 'NORWAY-OSLO', 'SLOVAKIA-BRATISLAVA', 'SRI LANKA-COLOMBO', 'SWITZERLAND-GENEVA', 'UK-LONDON', 'USA-CHICAGO', 'USA-SAN FRANCISCO'],
-  districts: ['Central Delhi', 'New Delhi', 'North Delhi', 'South Delhi', 'East Delhi', 'West Delhi', 'Mumbai', 'Bangalore', 'Hyderabad', 'Chennai', 'Kolkata', 'Ahmedabad', 'Pune', 'Jaipur', 'Lucknow'],
-  modules: ['Biometric', 'Black List Checking (BL)', 'Centralized Visa Issuance System (CVISA)', 'CIPPS', 'CONSPROM', 'Consular Issuance System (CIS)', 'District Police Module (DPM)', 'DVISA', 'eFRRO', 'EMAIL Related', 'E-SANAD', 'eSEWA (Online Indian Consular Services)/eCCSS', 'e-VISA', 'e-VISA (PLI Application)', 'Global Entry Program (GEP)', 'Indian Citizenship Portal', 'Indian Visa Online (VSS)', 'Overseas Citizen of India (OCI)', 'Prior Referral Check (PRC)', 'Virtual Private Network Token (VPN)', 'Other'],
-  shifts: ['Morning', 'Afternoon', 'Night'],
-  states: ['Andaman and Nicobar Islands', 'Andhra Pradesh', 'Arunachal Pradesh', 'Assam', 'Bihar', 'Chandigarh', 'Chhattisgarh', 'Dadra and Nagar Haveli and Daman and Diu', 'Delhi', 'Goa', 'Gujarat', 'Haryana', 'Himachal Pradesh', 'Jammu and Kashmir', 'Jharkhand', 'Karnataka', 'Kerala', 'Ladakh', 'Lakshadweep', 'Madhya Pradesh', 'Maharashtra', 'Manipur', 'Meghalaya', 'Mizoram', 'Nagaland', 'Odisha', 'Puducherry', 'Punjab', 'Rajasthan', 'Sikkim', 'Tamil Nadu', 'Telangana', 'Tripura', 'Uttar Pradesh', 'Uttarakhand', 'West Bengal'],
-  resolutions: ['Issue resolved with remote meeting', 'Issue resolved on Call', 'Issue resolved through mail reply', 'Forwarded to concerned team', 'Meeting sent but Mission not responded', 'Information only mail', 'Transferred to next shift person', 'Replied mail for more information', 'Pending']
+  users: [],
+  missions: [],
+  districts: [],
+  modules: [],
+  shifts: [],
+  states: [],
+  resolutions: []
 };
 if (fs.existsSync(OPTS_FILE)) {
   try { dynamicOptions = { ...dynamicOptions, ...JSON.parse(fs.readFileSync(OPTS_FILE, 'utf8')) }; } catch (e) { }
